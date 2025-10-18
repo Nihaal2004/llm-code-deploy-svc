@@ -7,6 +7,9 @@ import path from 'path';
 import { execSync } from 'child_process';
 import fetch from 'node-fetch';
 import mime from 'mime';
+import { execSync } from 'child_process';
+const sh = (cmd, opts = {}) =>
+  execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...opts });
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -303,7 +306,9 @@ async function createOrUpdateRepo({ repo, workdir, msg }){
   run(`git config user.email "${CFG.authorEmail}"`);
 
   try { run(`git remote remove origin`); } catch {}
-  run(`git remote add origin https://github.com/${CFG.user}/${repo}.git`);
+const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
+run(`git remote add origin ${remote}`);
+
 
   // base on remote if exists
   let hasRemote = true;
