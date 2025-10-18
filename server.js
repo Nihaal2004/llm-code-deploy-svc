@@ -7,8 +7,6 @@ import path from 'path';
 import { execSync } from 'child_process';
 import fetch from 'node-fetch';
 import mime from 'mime';
-const sh = (cmd, opts = {}) =>
-  execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...opts });
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
