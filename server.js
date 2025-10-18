@@ -7,7 +7,6 @@ import path from 'path';
 import { execSync } from 'child_process';
 import fetch from 'node-fetch';
 import mime from 'mime';
-import { execSync } from 'child_process';
 const sh = (cmd, opts = {}) =>
   execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...opts });
 
