@@ -21,6 +21,24 @@ const CFG = {
   authorName: process.env.GIT_AUTHOR_NAME || 'Task Bot',
   authorEmail: process.env.GIT_AUTHOR_EMAIL || 'bot@example.com',
 };
+const ghApi = async (method, path, body) => {
+  const r = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${CFG.token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!r.ok) throw new Error(`${method} ${path} -> ${r.status} ${await r.text()}`);
+  return r.json();
+};
+
+async function ensureRepoExists(repo) {
+  try { await ghApi('GET', `/repos/${CFG.user}/${repo}`); }
+  catch { await ghApi('POST', '/user/repos', { name: repo, private: false, auto_init: false, default_branch: 'main' }); }
+}
 
 const STATE = path.resolve('./state.json');
 if (!fs.existsSync(STATE)) fs.writeFileSync(STATE, JSON.stringify({ tasks:{} }, null, 2));
@@ -298,32 +316,25 @@ async function createOrUpdateRepo({ repo, workdir, msg }){
   const cwd = workdir;
   const run = (c)=>sh(c,{cwd});
 
+  await ensureRepoExists(repo);
+
   run(`git init`);
   run(`git config user.name "${CFG.authorName}"`);
   run(`git config user.email "${CFG.authorEmail}"`);
 
   try { run(`git remote remove origin`); } catch {}
-const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
-run(`git remote add origin ${remote}`);
+  const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
+  run(`git remote add origin ${remote}`);
 
-
-  // base on remote if exists
   let hasRemote = true;
-  try { run(`git ls-remote --heads origin main`); }
-  catch { hasRemote = false; }
+  try { run(`git ls-remote --heads origin main`); } catch { hasRemote = false; }
 
-  if (hasRemote) {
-    run(`git fetch origin main`);
-    run(`git checkout -B main origin/main`);
-  } else {
-    run(`git checkout -B main`);
-  }
+  if (hasRemote) { run(`git fetch origin main`); run(`git checkout -B main origin/main`); }
+  else { run(`git checkout -B main`); }
 
-  // write current generator output on top
   run(`git add -A`);
-  try { run(`git commit -m "${msg}"`); } catch {} // allow empty
+  try { run(`git commit -m "${msg}"`); } catch {}
 
-  // always align to remote tip, then push
   if (hasRemote) run(`git pull --rebase origin main || :`);
   run(`git push --force-with-lease -u origin main`);
 
