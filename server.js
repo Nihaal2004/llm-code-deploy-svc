@@ -312,34 +312,30 @@ THE SOFTWARE.
 `;
 
 // --- git + repo ---
-async function createOrUpdateRepo({ repo, workdir, msg }){
+async function createOrUpdateRepo({ repo, workdir, msg }) {
   const cwd = workdir;
-  const run = (c)=>sh(c,{cwd});
+  const run = (c) => sh(c, { cwd });
 
+  // make sure the repo exists (via your ghApi helper)
   await ensureRepoExists(repo);
 
+  // init local repo and commit current files
   run(`git init`);
   run(`git config user.name "${CFG.authorName}"`);
   run(`git config user.email "${CFG.authorEmail}"`);
+  run(`git checkout -B main`);
+  run(`git add -A`);
+  try { run(`git commit -m "${msg}"`); } catch {} // allow empty
 
+  // set PAT-auth remote and push without fetching
   try { run(`git remote remove origin`); } catch {}
   const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
   run(`git remote add origin ${remote}`);
-
-  let hasRemote = true;
-  try { run(`git ls-remote --heads origin main`); } catch { hasRemote = false; }
-
-  if (hasRemote) { run(`git fetch origin main`); run(`git checkout -B main origin/main`); }
-  else { run(`git checkout -B main`); }
-
-  run(`git add -A`);
-  try { run(`git commit -m "${msg}"`); } catch {}
-
-  if (hasRemote) run(`git pull --rebase origin main || :`);
   run(`git push --force-with-lease -u origin main`);
 
   return run(`git rev-parse HEAD`).trim();
 }
+
 
 
 
