@@ -368,10 +368,18 @@ async function createOrUpdateRepo({ repo, workdir, msg }) {
   try { run(`git remote remove origin`); } catch {}
   const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
   run(`git remote add origin ${remote}`);
-  run(`git push --force-with-lease -u origin main`);
+
+  // make lease happy, then push; if it still fails, force
+  try {
+    run(`git fetch origin main || true`);
+    run(`git push --force-with-lease -u origin main`);
+  } catch (e) {
+    run(`git push --force -u origin main`);
+  }
 
   return run(`git rev-parse HEAD`).trim();
 }
+
 
 // --- HTTP endpoint ---
 app.post(['/api-endpoint','/task'], async (req, res) => {
