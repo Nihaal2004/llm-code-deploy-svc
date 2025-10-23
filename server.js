@@ -15,14 +15,15 @@ app.use(express.json({ limit: '10mb' }));
 function reqEnv(k){ if(!process.env[k]) throw new Error(`Missing ${k}`); return process.env[k]; }
 const CFG = {
   user: reqEnv('GITHUB_USERNAME'),
-  token: reqEnv('GITHUB_TOKEN'),           // not used by gh, kept for future
+  token: reqEnv('GITHUB_TOKEN'),
   secret: reqEnv('STUDENT_SECRET'),
   port: process.env.PORT || 8080,
   authorName: process.env.GIT_AUTHOR_NAME || 'Task Bot',
   authorEmail: process.env.GIT_AUTHOR_EMAIL || 'bot@example.com',
 };
-const ghApi = async (method, path, body) => {
-  const r = await fetch(`https://api.github.com${path}`, {
+
+const ghApi = async (method, p, body) => {
+  const r = await fetch(`https://api.github.com${p}`, {
     method,
     headers: {
       Authorization: `Bearer ${CFG.token}`,
@@ -31,9 +32,52 @@ const ghApi = async (method, path, body) => {
     },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!r.ok) throw new Error(`${method} ${path} -> ${r.status} ${await r.text()}`);
+  if (!r.ok) throw new Error(`${method} ${p} -> ${r.status} ${await r.text()}`);
   return r.json();
 };
+
+// tolerant Pages enable
+async function ensurePagesEnabled(owner, repo){
+  const url = `https://api.github.com/repos/${owner}/${repo}/pages`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${CFG.token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ build_type: 'workflow' })
+  });
+  if (r.status === 201 || r.status === 409) return;
+  if (r.ok) return;
+  throw new Error(`enable pages failed ${r.status}: ${await r.text()}`);
+}
+
+async function rerunLatestWorkflow(owner, repo){
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?per_page=1`, {
+    headers: { Authorization: `Bearer ${CFG.token}`, Accept: 'application/vnd.github+json' }
+  });
+  if (!r.ok) return;
+  const j = await r.json();
+  const id = j?.workflow_runs?.[0]?.id;
+  if (!id) return;
+  await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${id}/rerun`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${CFG.token}`, Accept: 'application/vnd.github+json' }
+  });
+}
+
+async function waitForPages200(pagesUrl, timeoutMs = 180000){
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try{
+      const r = await fetch(`${pagesUrl}?nocache=${Math.random()}`, { method:'HEAD', cache:'no-store' });
+      if (r.status === 200) return;
+    }catch{}
+    await new Promise(r=>setTimeout(r, 5000));
+  }
+  throw new Error('pages never reached 200');
+}
 
 async function ensureRepoExists(repo) {
   try { await ghApi('GET', `/repos/${CFG.user}/${repo}`); }
@@ -63,7 +107,7 @@ async function notifyEvaluator(url, payload){
     try{
       const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       if (r.ok) return true;
-    }catch(_) {}
+    }catch{}
     await new Promise(r=>setTimeout(r, delay));
     delay *= 2;
   }
@@ -89,7 +133,6 @@ async function generateSite({ workdir, brief, attachments, tpl, seed, round }){
   const site = path.join(workdir, 'site');
   ensureDir(site); ensureDir(path.join(site,'assets'));
 
-  // write attachments
   for (const a of (attachments||[])){
     const buf = decodeDataUri(a.url);
     const name = a.name || ('file.' + (mime.getExtension('application/octet-stream')||'bin'));
@@ -257,14 +300,11 @@ ${commonHead}
   await fsp.writeFile(path.join(site,'index.html'), html, 'utf8');
   await fsp.writeFile(path.join(site,'.nojekyll'), '', 'utf8');
 
-  // LICENSE
   await fsp.writeFile(path.join(workdir,'LICENSE'), MIT_LICENSE, 'utf8');
 
-  // README
   const readme = `# ${tpl}\n\n**Round**: ${round}\n\n## Summary\n${brief}\n\n## Setup\nStatic site deployed by GitHub Pages via Actions.\n\n## Usage\nOpen the Pages URL.\n\n## Code\nSingle static page in \`/site\`.\n\n## License\nMIT\n`;
   await fsp.writeFile(path.join(workdir,'README.md'), readme, 'utf8');
 
-  // Pages workflow
   const wfDir = path.join(workdir,'.github','workflows'); ensureDir(wfDir);
   const pagesYml = `name: Deploy Pages
 on:
@@ -316,18 +356,15 @@ async function createOrUpdateRepo({ repo, workdir, msg }) {
   const cwd = workdir;
   const run = (c) => sh(c, { cwd });
 
-  // make sure the repo exists (via your ghApi helper)
   await ensureRepoExists(repo);
 
-  // init local repo and commit current files
   run(`git init`);
   run(`git config user.name "${CFG.authorName}"`);
   run(`git config user.email "${CFG.authorEmail}"`);
   run(`git checkout -B main`);
   run(`git add -A`);
-  try { run(`git commit -m "${msg}"`); } catch {} // allow empty
+  try { run(`git commit -m "${msg}"`); } catch {}
 
-  // set PAT-auth remote and push without fetching
   try { run(`git remote remove origin`); } catch {}
   const remote = `https://x-access-token:${CFG.token}@github.com/${CFG.user}/${repo}.git`;
   run(`git remote add origin ${remote}`);
@@ -335,10 +372,6 @@ async function createOrUpdateRepo({ repo, workdir, msg }) {
 
   return run(`git rev-parse HEAD`).trim();
 }
-
-
-
-
 
 // --- HTTP endpoint ---
 app.post(['/api-endpoint','/task'], async (req, res) => {
@@ -363,6 +396,11 @@ app.post(['/api-endpoint','/task'], async (req, res) => {
     const sha = await createOrUpdateRepo({ repo, workdir, msg:`round ${round}: ${tpl}` });
     const repo_url = `https://github.com/${CFG.user}/${repo}`;
     const pages_url = `https://${CFG.user}.github.io/${repo}/`;
+
+    // Pages auto-fix
+    await ensurePagesEnabled(CFG.user, repo);
+    await rerunLatestWorkflow(CFG.user, repo);
+    await waitForPages200(pages_url);
 
     st.tasks[key] = { repo, lastRound: round, updatedAt: now() };
     writeState(st);
